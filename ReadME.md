@@ -52,7 +52,7 @@ Responsible for:
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/AstroTechZM/PasswordManager.git
 ```
 
 ### 2. Load the Extension
