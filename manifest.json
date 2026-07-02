@@ -10,7 +10,7 @@
 	[
 		{
 			"js": [ "content-script.js" ],
-			"matches": [ "http://localhost/*" ]
+			"matches": [ "<all_urls>" ]
 		}
 	]
 		
