@@ -30,7 +30,8 @@ function isElementVisible(element) {
 /**
  * Phase 3 & 4: Heuristics and Object Construction
  */
-function discoverLoginForm() {
+function discoverLoginForm() 
+{
   const inputs = getValidInputs();
   let passwordField = null;
   let usernameField = null;
@@ -74,7 +75,40 @@ const loginFormDetails = discoverLoginForm();
 
 if (loginFormDetails) {
   console.log("Password Manager: Found a login form!", loginFormDetails);
-  // Next Step: Send this object to your Background Service Worker!
-} else {
+  sendFormToBackground(loginFormDetails);
+}
+ else {
   console.log("Password Manager: No login form found on this page.");
 }
+
+
+
+
+function sendFormToBackground(formDetails) 
+{
+  const message = {
+    action: "REQ_AUTOFILL_DATA",
+    payload: {
+      url: window.location.href,
+      hostname: window.location.hostname,
+      fields: formDetails // Your discovered fields
+    }
+  };
+
+  // Send the message and handle the response from the background
+  chrome.runtime.sendMessage(message, (response) => {
+    if (chrome.runtime.lastError) {
+      console.error("Message failed:", chrome.runtime.lastError.message);
+      return;
+    }
+
+    if (response.status === "SUCCESS") {
+      console.log("Credentials received! Now ready to autofill.");
+      fillForm(response.data); // We will write this function next
+    } else {
+      console.warn("Autofill not possible:", response.message);
+    }
+  });
+}
+
+
