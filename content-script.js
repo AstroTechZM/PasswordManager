@@ -95,7 +95,6 @@ function sendFormToBackground(formDetails)
     }
   };
 
-  // Send the message and handle the response from the background
   chrome.runtime.sendMessage(message, (response) => {
     if (chrome.runtime.lastError) {
       console.error("Message failed:", chrome.runtime.lastError.message);

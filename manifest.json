@@ -12,6 +12,16 @@
 			"js": [ "content-script.js" ],
 			"matches": [ "<all_urls>" ]
 		}
+	],
+	"background": {
+		"service_worker": "background.js"
+	},
+	"permissions": [
+		"storage",
+		"activeTab",
+		"tabs",
+		"webNavigation",
+		"webRequest"
 	]
 		
 }
