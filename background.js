@@ -1,82 +1,100 @@
 
-
+let sessionMasterPassword = null; 
+// --- 1. MESSAGING LAYER ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // 1. Route the action
   if (message.action === "REQ_AUTOFILL_DATA") {
-    
-    // 2. Perform the logic (Query storage, check if unlocked, etc)
     handleAutofillRequest(message.payload)
-      .then((response) => {
-        // 3. Send the result back to the Content Script
-        sendResponse(response);
+      .then((response) => sendResponse(response))
+      .catch((error) => {
+        console.error("Autofill Request Failed:", error);
+        sendResponse({ status: "ERROR", message: "Internal Vault Error" });
       });
-
-    // IMPORTANT: Returns true to indicate the  sendResponse is called asynchronously
-    return true; 
+    return true; // Keep the message channel open for async response
   }
 });
 
 async function handleAutofillRequest(payload) {
-  const result = await chrome.storage.local.get(['vaultUnlocked']);
-  if (result.vaultUnlocked) {
-    console.log("Vault is unlocked, proceeding with autofill.");
-    // Here you would typically fetch the credentials from storage and return them
-    // For demonstration, we return a mock response
+  if (!sessionMasterPassword) {
+    console.log("Vault is locked, cannot autofill.");
     return { 
-        status: "SUCCESS", 
-        credentials: {
-          username: "exampleUser",
-          password: "examplePass"
-        }
-      };
-    } else {
-      console.log("Vault is locked, cannot autofill.");
-      return { 
-        status: "VAULT_LOCKED", 
-        message: "Unlock me in the popup first!" 
-      };
-    }
+      status: "VAULT_LOCKED", 
+      message: "Unlock me in the popup first!" 
+    };
+  }
+
+  console.log(`Vault is unlocked. Searching for: ${payload.hostname}`);
+  
+
+  const decryptedRecord = await StorageService.getRecords(payload.hostname, sessionMasterPassword);
+  
+  if (decryptedRecord) {
+    return { 
+      status: "SUCCESS", 
+      credentials: {
+        username: decryptedRecord.username,
+        password: decryptedRecord.password
+      }
+    };
+  } else {
+    return {
+      status: "NO_MATCH",
+      message: "No credentials saved for this site."
+    };
+  }
 }
 
 
+
+
+// --- 2. STORAGE LAYER ---
 const StorageService = {
-    async saveRecord(hostname, username, password,masterKey) {
-      const record = new Record(hostname, username, password);
-      const data = await chrome.storage.local.get(['vault']);
-      const vault = data.vault || {records: []};
-      const encryptedData = await CryptoService.encryptData(record, masterKey);
-      vault.records.push({"hostname": hostname, "data": data});
-      await chrome.storage.local.set({vault});
-    },
+  async saveRecord(hostname, username, password, masterKey) {
+    const record = new Record(hostname, username, password);
+    const data = await chrome.storage.local.get(['vault']);
     
-    async getRecords(hostname, masterKey) {
-      const data = await chrome.storage.local.get(['vault']);
-      const record = data.vault ? data.vault.records.find(r => r.hostname === hostname) : null;
-      if (record) {
-        return await CryptoService.decryptData(record.data, masterKey);
-      }
-      return null; 
+    // Initialize vault if it doesn't exist
+    const vault = (data.vault && data.vault.records) ? data.vault : new Vault();
+    
+    // Encrypt the payload
+    const encryptedData = await CryptoService.encryptData(record, masterKey);
+    
+    // Save to storage
+    vault.records.push({ hostname: hostname, data: encryptedData });
+    await chrome.storage.local.set({ vault });
+  },
+  
+  async getRecords(hostname, masterKey) {
+    const data = await chrome.storage.local.get(['vault']);
+    const record = data.vault ? data.vault.records.find(r => r.hostname === hostname) : null;
+    
+    if (record) {
+      return await CryptoService.decryptData(record.data, masterKey);
     }
+    return null; 
+  }
 };
 
 class Record {
   constructor(hostname, username, password) {
+    this.hostname = hostname; 
     this.username = username;
     this.password = password;
     this.createdAt = Date.now();
   }
-
 }
 
-class Vault{
-  constructor(){
+class Vault {
+  constructor() {
+    this.salt = null;
+    this.masterKeyVerifier = null;
     this.records = [];
     this.lastUpdated = Date.now();
   }
 }
 
-class CryptoService {
-  async deriveKey(masterPassword, salt) {
+// --- 3. CRYPTO LAYER ---
+const CryptoService = {
+  async deriveKey(masterPassword, saltUint8Array) {
     const encoder = new TextEncoder();
     const basekey = await crypto.subtle.importKey(
       "raw",
@@ -89,7 +107,7 @@ class CryptoService {
     return await crypto.subtle.deriveKey(
       {
         name: "PBKDF2",
-        salt: encoder.encode(salt),
+        salt: saltUint8Array,
         iterations: 100000,
         hash: "SHA-256"
       },
@@ -98,12 +116,13 @@ class CryptoService {
       true,
       ["encrypt", "decrypt"]
     );
-  }
+  },
 
   async encryptData(data, masterPassword) { 
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const key = await this.deriveKey(masterPassword, salt);
     const iv = crypto.getRandomValues(new Uint8Array(12));
+    
     const encoder = new TextEncoder();
     const encodedData = encoder.encode(JSON.stringify(data));
 
@@ -118,7 +137,7 @@ class CryptoService {
       iv: Array.from(iv),
       data: Array.from(new Uint8Array(encryptedData))
     };
-  }
+  },
 
   async decryptData(encryptedObject, masterPassword) {
     const { salt, iv, data } = encryptedObject;
@@ -133,4 +152,30 @@ class CryptoService {
     const decoder = new TextDecoder();
     return JSON.parse(decoder.decode(decryptedData));
   }
+};
+
+// --- 4. AUTHENTICATION HELPERS ---
+
+async function verifyMasterPassword(masterPassword, saltArray, verifierHex) {
+  const salt = new Uint8Array(saltArray);
+  const derivedKey = await CryptoService.deriveKey(masterPassword, salt);
+  
+  const exportedKey = await crypto.subtle.exportKey("raw", derivedKey);
+  const keyBytes = new Uint8Array(exportedKey);
+  
+  const verifierBytes = hexToUint8Array(verifierHex);
+  return safeCompare(keyBytes, verifierBytes);
+}
+
+function safeCompare(a, b) {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a[i] ^ b[i]; 
+  }
+  return result === 0; 
+}
+
+function hexToUint8Array(hex) {
+  return new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
 }
